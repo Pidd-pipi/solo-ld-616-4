@@ -1,0 +1,1 @@
+export const createCalibrationPlanDto = (overrides = {}) => ({ id: 1, device_id: 1, planned_date: "2026-06-11T09:00:00Z", plan_type: "DUE_SOON", priority: "priority 1", status: "DUE_SOON", assigned_vendor_id: 1, created_by: "created by 1", ...overrides });

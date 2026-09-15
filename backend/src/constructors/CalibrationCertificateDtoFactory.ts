@@ -1,0 +1,1 @@
+export const createCalibrationCertificateDto = (overrides = {}) => ({ id: 1, device_id: 1, plan_id: 1, certificate_no: "certificate no 1", result_status: "DUE_SOON", valid_until: "valid until 1", file_path: "file path 1", issued_by: "issued by 1", ...overrides });

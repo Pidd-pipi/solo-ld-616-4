@@ -1,0 +1,27 @@
+import express from "express";
+import cors from "cors";
+import { config } from "./config/env";
+import { authMiddleware } from "./middlewares/authMiddleware";
+import { auditLogMiddleware } from "./middlewares/auditLogMiddleware";
+import { requestLoggerMiddleware } from "./middlewares/requestLoggerMiddleware";
+import { errorHandlerMiddleware } from "./middlewares/errorHandlerMiddleware";
+import measuringDeviceRoutes from "./routes/MeasuringDeviceRoutes";
+import calibrationPlanRoutes from "./routes/CalibrationPlanRoutes";
+import calibrationCertificateRoutes from "./routes/CalibrationCertificateRoutes";
+import calibrationVendorRoutes from "./routes/CalibrationVendorRoutes";
+import overdueAlertRoutes from "./routes/OverdueAlertRoutes";
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(requestLoggerMiddleware);
+app.use(authMiddleware);
+app.use(auditLogMiddleware);
+app.get("/health", (_req, res) => res.json({ status: "ok", service: "calibration-api" }));
+app.use("/api/measuring-device", measuringDeviceRoutes);
+app.use("/api/calibration-plan", calibrationPlanRoutes);
+app.use("/api/calibration-certificate", calibrationCertificateRoutes);
+app.use("/api/calibration-vendor", calibrationVendorRoutes);
+app.use("/api/overdue-alert", overdueAlertRoutes);
+app.use(errorHandlerMiddleware);
+app.listen(config.port, () => console.log("calibration-api backend listening on", config.port));

@@ -1,0 +1,1 @@
+import type { Request, Response } from "express"; import { calibrationPlanService } from "../services/CalibrationPlanService"; export const calibrationPlanController = { list: (_req: Request, res: Response) => res.json(calibrationPlanService.list()), create: (req: Request, res: Response) => res.status(201).json(calibrationPlanService.create(req.body)) };

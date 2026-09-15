@@ -1,0 +1,1 @@
+import { Router } from "express"; import { calibrationVendorController } from "../controllers/CalibrationVendorController"; const router = Router(); router.get("/", calibrationVendorController.list); router.post("/", calibrationVendorController.create); export default router;

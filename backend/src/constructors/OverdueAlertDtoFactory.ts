@@ -1,0 +1,1 @@
+export const createOverdueAlertDto = (overrides = {}) => ({ id: 1, device_id: 1, plan_id: 1, alert_level: "LOW", alert_reason: "alert reason 1", handled_by: "handled by 1", handled_at: "2026-06-11T09:00:00Z", status: "DUE_SOON", ...overrides });

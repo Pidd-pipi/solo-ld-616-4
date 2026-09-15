@@ -1,0 +1,1 @@
+import { measuringDeviceRepository } from "../repositories/MeasuringDeviceRepository"; export const measuringDeviceService = { list: () => measuringDeviceRepository.findAll(), create: (row: unknown) => measuringDeviceRepository.save(row) };

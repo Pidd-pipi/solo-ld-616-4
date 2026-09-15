@@ -1,0 +1,1 @@
+import { calibrationPlanRepository } from "../repositories/CalibrationPlanRepository"; export const calibrationPlanService = { list: () => calibrationPlanRepository.findAll(), create: (row: unknown) => calibrationPlanRepository.save(row) };

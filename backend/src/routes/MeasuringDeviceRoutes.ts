@@ -1,0 +1,1 @@
+import { Router } from "express"; import { measuringDeviceController } from "../controllers/MeasuringDeviceController"; const router = Router(); router.get("/", measuringDeviceController.list); router.post("/", measuringDeviceController.create); export default router;

@@ -1,0 +1,1 @@
+import type { Request, Response } from "express"; import { overdueAlertService } from "../services/OverdueAlertService"; export const overdueAlertController = { list: (_req: Request, res: Response) => res.json(overdueAlertService.list()), create: (req: Request, res: Response) => res.status(201).json(overdueAlertService.create(req.body)) };

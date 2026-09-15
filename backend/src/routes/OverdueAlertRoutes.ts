@@ -1,0 +1,1 @@
+import { Router } from "express"; import { overdueAlertController } from "../controllers/OverdueAlertController"; const router = Router(); router.get("/", overdueAlertController.list); router.post("/", overdueAlertController.create); export default router;

@@ -1,0 +1,1 @@
+export const createCalibrationVendorDto = (overrides = {}) => ({ id: 1, vendor_name: "vendor name 1", qualification_no: "qualification no 1", contact_phone: "13800000001", service_scope: "service scope 1", vendor_status: "DUE_SOON", ...overrides });

@@ -1,0 +1,1 @@
+import { overdueAlertRepository } from "../repositories/OverdueAlertRepository"; export const overdueAlertService = { list: () => overdueAlertRepository.findAll(), create: (row: unknown) => overdueAlertRepository.save(row) };
