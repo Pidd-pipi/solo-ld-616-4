@@ -82,12 +82,33 @@ const SCHEMA_STATEMENTS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_calibration_plan_device
      ON calibration_plan (device_id)`,
   `CREATE TABLE IF NOT EXISTS idempotency_record (
-     idempotency_key TEXT PRIMARY KEY,
      scope TEXT NOT NULL,
+     idempotency_key TEXT NOT NULL,
      status_code INTEGER NOT NULL,
      response JSONB NOT NULL,
-     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-   )`
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+     -- 幂等键按调用范围隔离：同一 key 在不同写接口（不同 scope）互不串用，
+     -- 同一接口同一 key 仍只执行一次。
+     PRIMARY KEY (scope, idempotency_key)
+   )`,
+  // 一次性在线迁移：把旧版（idempotency_key 单列主键）表升级为 (scope, idempotency_key) 复合主键。
+  `DO $$
+     BEGIN
+       IF EXISTS (
+         SELECT 1 FROM pg_indexes
+         WHERE tablename = 'idempotency_record'
+           AND indexdef LIKE '%(idempotency_key)%'
+           AND indexdef NOT LIKE '%scope%'
+       ) THEN
+         UPDATE idempotency_record SET scope = 'legacy' WHERE scope IS NULL OR scope = '';
+         ALTER TABLE idempotency_record DROP CONSTRAINT idempotency_record_pkey;
+         ALTER TABLE idempotency_record ALTER COLUMN scope SET NOT NULL;
+         ALTER TABLE idempotency_record ADD PRIMARY KEY (scope, idempotency_key);
+       END IF;
+     EXCEPTION WHEN undefined_table THEN
+       NULL;
+     END;
+   $$`
 ];
 
 const resetIdentity = (table: string): string =>

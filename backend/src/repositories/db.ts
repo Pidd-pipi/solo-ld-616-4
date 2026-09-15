@@ -2,10 +2,11 @@ import { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
 import { config } from "../config/env";
 import { ERROR_CODES } from "../constants/errorCodes";
 import { ERROR_MESSAGES } from "../constants/errorMessages";
-import { DomainError } from "../utils/domainError";
+import { DomainError, retryablePersistence } from "../utils/domainError";
 
 /**
- * 全局 PostgreSQL 连接池。所有实体的唯一持久化存储，进程内不再保留业务可变状态。
+ * 全局 PostgreSQL 连接池。所有实体的唯一持久化存储，进程内不保留业务可变状态。
+ * 连接断开时由池自动重连，后端进程始终存活，不允许因为数据库暂时不可用而退出。
  */
 export const pool = new Pool({
   host: config.db.host,
@@ -16,21 +17,59 @@ export const pool = new Pool({
   max: 20
 });
 
+// 空闲连接发生错误（如数据库重启导致 idle client 被关闭）时仅记录，不能让未处理错误终止进程。
+pool.on("error", (err) => {
+  console.error("[db] idle client error (pool will reconnect):", err.message);
+});
+
 /**
- * 任意数据库读/写失败统一包装成 PERSISTENCE_FAILED（503），
- * service 不允许在写库失败时仅改内存后报告成功。
+ * 连接层 SQLSTATE：客户端无法连接/被踢出等暂时性故障，可重试。
+ * 08xxx=连接异常，57P01=管理员关停，57P03=无法启动，08006/08004 等。
+ */
+const RETRYABLE_SQLSTATES = new Set([
+  "08000", "08003", "08004", "08006", "08007", "08P01",
+  "57P01", "57P02", "57P03", "53300"
+]);
+
+const isRetryablePgError = (err: unknown): boolean => {
+  const e = err as { code?: string; message?: string } | null;
+  if (!e || typeof e !== "object") {
+    return false;
+  }
+  if (e.code && RETRYABLE_SQLSTATES.has(e.code)) {
+    return true;
+  }
+  const message = e.message ?? "";
+  return (
+    /ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|ENETUNREACH|EHOSTUNREACH|connection terminated|Connection terminated|Connection terminated unexpectedly|timeout exceeded/i.test(
+      message
+    )
+  );
+};
+
+/**
+ * 数据库读/写失败统一包装：
+ * - 连接中断等暂时性故障 -> 503 PERSISTENCE_FAILED，retryable=true（附 Retry-After）；
+ * - 约束冲突、SQL 错误等非连接问题 -> 503 PERSISTENCE_FAILED，retryable=false，
+ *   底层 pg 错误挂在 cause 上（含 SQLSTATE 23505，供唯一约束映射 409）。
  */
 export const mapDbError = (err: unknown, scope: string): DomainError => {
   const detail = err instanceof Error ? err.message : String(err);
-  const wrapped = new DomainError(
-    503,
+  const wrapped = retryablePersistence(
     ERROR_CODES.PERSISTENCE_FAILED,
     `${ERROR_MESSAGES.PERSISTENCE_FAILED} [${scope}]: ${detail}`
   );
-  // 保留底层 pg 错误（含 SQLSTATE），供上层把唯一约束冲突等映射为 409。
+  if (!isRetryablePgError(err)) {
+    (wrapped as DomainError & { retryable: boolean }).retryable = false;
+  }
   (wrapped as DomainError & { cause?: unknown }).cause = err;
   return wrapped;
 };
+
+/**
+ * 判断错误是否为可重试的连接故障（供就绪探测使用）。
+ */
+export const isRetryableDatabaseError = (err: unknown): boolean => isRetryablePgError(err);
 
 export const query = async <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -59,7 +98,6 @@ export const withTransaction = async <T>(fn: (client: DbClient) => Promise<T>): 
   try {
     client = await pool.connect();
   } catch (err) {
-    // 连接获取失败（如数据库不可达）同样包装为明确的持久化错误。
     throw mapDbError(err, "pool.connect");
   }
   try {
@@ -90,32 +128,4 @@ export const clientQuery = async <T extends QueryResultRow = QueryResultRow>(
   } catch (err) {
     throw mapDbError(err, text.slice(0, 48));
   }
-};
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * 启动时等待数据库就绪；重试耗尽后抛出，调用方以非零码退出。
- */
-export const waitForDatabase = async (): Promise<void> => {
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= config.db.connectRetries; attempt += 1) {
-    try {
-      const result = await pool.query("SELECT 1 AS ok");
-      if (result.rows[0]?.ok === 1) {
-        return;
-      }
-    } catch (err) {
-      lastError = err;
-      console.warn(
-        `[db] waiting for postgres (${attempt}/${config.db.connectRetries}) ${config.db.host}:${config.db.port}/${config.db.database}`
-      );
-      await sleep(config.db.connectRetryDelayMs);
-    }
-  }
-  throw mapDbError(lastError ?? new Error("database unreachable"), "waitForDatabase");
-};
-
-export const closeDatabase = async (): Promise<void> => {
-  await pool.end();
 };

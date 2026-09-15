@@ -1,8 +1,12 @@
 import express from "express";
 import cors from "cors";
 import { config } from "./config/env";
-import { bootstrapDatabase } from "./repositories/schema";
-import { waitForDatabase, closeDatabase, query } from "./repositories/db";
+import {
+  startDatabaseBootstrap,
+  isDatabaseReady,
+  getDatabaseState
+} from "./repositories/databaseState";
+import { databaseReadyMiddleware } from "./middlewares/databaseReadyMiddleware";
 import { authMiddleware } from "./middlewares/authMiddleware";
 import { auditLogMiddleware } from "./middlewares/auditLogMiddleware";
 import { requestLoggerMiddleware } from "./middlewares/requestLoggerMiddleware";
@@ -21,16 +25,22 @@ app.use(requestLoggerMiddleware);
 app.use(authMiddleware);
 app.use(auditLogMiddleware);
 
-// /health 同时反映数据库连通性；数据库不可用时返回 503，而不是假装健康。
-app.get("/health", async (_req, res) => {
-  try {
-    await query("SELECT 1 AS ok");
+// /health 始终可答：即使数据库未就绪，进程本身仍存活；database 字段反映当前状态。
+app.get("/health", (_req, res) => {
+  const { state } = getDatabaseState();
+  if (isDatabaseReady()) {
     res.json({ status: "ok", service: "calibration-api", database: "up" });
-  } catch {
-    res.status(503).json({ status: "degraded", service: "calibration-api", database: "down" });
+  } else {
+    res.status(503).json({
+      status: "degraded",
+      service: "calibration-api",
+      database: state === "degraded" ? "down" : "initializing"
+    });
   }
 });
 
+// /api 在数据库未就绪时统一返回可重试 503；恢复后中间件自动放行。
+app.use("/api", databaseReadyMiddleware);
 app.use("/api/measuring-device", deviceLifecycleRoutes);
 app.use("/api/measuring-device", measuringDeviceRoutes);
 app.use("/api/calibration-plan", calibrationPlanRoutes);
@@ -39,27 +49,15 @@ app.use("/api/calibration-vendor", calibrationVendorRoutes);
 app.use("/api/overdue-alert", overdueAlertRoutes);
 app.use(errorHandlerMiddleware);
 
-/**
- * 启动顺序必须是：等待数据库 → 幂等建表/种子 → 监听端口。
- * 数据库不可达时直接非零退出，绝不在空内存上提供会丢数据的服务。
- */
-const start = async (): Promise<void> => {
-  await waitForDatabase();
-  await bootstrapDatabase();
-  const server = app.listen(config.port, () =>
-    console.log("calibration-api backend listening on", config.port)
-  );
-
-  const shutdown = async () => {
-    server.close(() => void 0);
-    await closeDatabase().catch(() => undefined);
-    process.exit(0);
-  };
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
-};
-
-start().catch((err) => {
-  console.error("[startup] failed to initialize database, aborting:", err);
-  process.exit(1);
+// 进程先监听端口，数据库引导在后台无限重试；数据库断开/恢复都不影响进程存活。
+const server = app.listen(config.port, () => {
+  console.log("calibration-api backend listening on", config.port);
+  console.log("[db] starting background bootstrap, serving retryable 503 until database is ready");
+  startDatabaseBootstrap();
 });
+
+const shutdown = async () => {
+  server.close(() => process.exit(0));
+};
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);

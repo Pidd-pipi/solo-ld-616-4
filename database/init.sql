@@ -85,11 +85,14 @@ CREATE TABLE IF NOT EXISTS device_lifecycle_record (
 CREATE INDEX IF NOT EXISTS idx_lifecycle_record_device
   ON device_lifecycle_record (device_id, created_at DESC, id DESC);
 
--- 写接口幂等：同一 Idempotency-Key 重放首次结果，重复提交不产生第二条记录。
+-- 写接口幂等：按调用范围隔离。同一 (scope, Idempotency-Key) 重放首次结果，
+-- 重复提交不产生第二条记录；不同写接口（不同 scope）即使 key 相同也互不串用。
+-- scope 形如 POST:/api/measuring-device/:id/exempt。
 CREATE TABLE IF NOT EXISTS idempotency_record (
-  idempotency_key TEXT PRIMARY KEY,
   scope TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
   status_code INTEGER NOT NULL,
   response JSONB NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope, idempotency_key)
 );

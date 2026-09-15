@@ -46,7 +46,8 @@ backend/src/routes, controllers, services, models, repositories, middlewares, co
 - `DB_USER/DB_PASSWORD/DB_NAME`: 本地数据库凭据
 - `DB_HOST`: 数据库主机，容器内为 `db`，本地直连默认 `localhost`
 - `JWT_SECRET`: JWT 签名密钥
-- `DB_CONNECT_RETRIES / DB_CONNECT_RETRY_DELAY_MS`: 启动等待数据库就绪的重试次数与间隔；重试耗尽则非零退出，不回退内存存储
+- `DB_CONNECT_RETRY_DELAY_MS`: 数据库未就绪/掉线后的后台重试间隔，默认 1000ms（无限重试，进程不退出）
+- `DB_READY_PROBE_INTERVAL_MS`: 就绪后的数据库探活间隔，默认 3000ms；探测到掉线即返回可重试 503，恢复后自动转回正常服务
 
 ## Docker 部署说明
 
@@ -84,14 +85,18 @@ curl -X POST http://localhost:21116/api/measuring-device/3/scrap \
 curl http://localhost:21116/api/measuring-device/due-calibration
 ```
 
-冲突相关错误码：`DEVICE_NOT_FOUND`(404)、`DEVICE_ALREADY_SCRAPPED`(409)、`DEVICE_ALREADY_EXEMPT`(409)、`DEVICE_SCRAP_PLAN_CONFLICT`(409)、`PLAN_DEVICE_SCRAPPED`(409)、`PLAN_DEVICE_EXEMPT`(409)、`DEVICE_CODE_DUPLICATED`(409)、`IDEMPOTENCY_REPLAY_PENDING`(409)、`PERSISTENCE_FAILED`(503)、`VALIDATION_FAILED`(400)。
+冲突相关错误码：`DEVICE_NOT_FOUND`(404)、`DEVICE_ALREADY_SCRAPPED`(409)、`DEVICE_ALREADY_EXEMPT`(409)、`DEVICE_SCRAP_PLAN_CONFLICT`(409)、`PLAN_DEVICE_SCRAPPED`(409)、`PLAN_DEVICE_EXEMPT`(409)、`DEVICE_CODE_DUPLICATED`(409)、`IDEMPOTENCY_REPLAY_PENDING`(409)、`PERSISTENCE_FAILED`(503)、`DATABASE_NOT_READY`(503, retryable)、`VALIDATION_FAILED`(400)。
 
-## 持久化与幂等
+## 持久化与故障恢复
 
-- 所有写入（建档、豁免、到期恢复、报废、新建计划/证书/预警）都直接落 **PostgreSQL**，进程内不再保留业务可变状态；服务重启后豁免、报废、新增设备和变更记录仍可查到，计划、证书、预警数量不随重启变化。
-- 启动顺序固定为：等待数据库就绪 → 幂等建表（`repositories/schema.ts`，与 `database/init.sql` 对齐）→ `ON CONFLICT DO NOTHING` 幂等种子并校正 identity 序列 → 监听端口。数据库不可达时启动直接失败（退出码 1），`/health` 在数据库异常时返回 503。
-- 生命周期写操作在事务内对设备行 `SELECT ... FOR UPDATE`：状态判定、进行中计划计数、设备更新、变更记录追加原子提交；写库失败整体回滚并返回 `503 PERSISTENCE_FAILED`，不会出现“只改内存后报告成功”。
-- **写接口幂等**：对建档、豁免、报废、新建计划/证书/预警在请求头带 `Idempotency-Key: <任意唯一串>`，同一 key 的重复或并发请求只落一次库并返回首次结果（存于 `idempotency_record` 表），不会生成两条相同记录。不带该头则按普通请求处理；`device_code` 上还有数据库唯一约束兜底重复建档。
+- 所有写入（建档、豁免、到期恢复、报废、新建计划/证书/预警）都直接落 **PostgreSQL**，进程内不保留业务可变状态；服务重启后豁免、报废、新增设备和变更记录仍可查到，计划、证书、预警数量不随重启变化。
+- **进程不依赖数据库先启动**：HTTP 服务先监听，建表与幂等种子（`repositories/schema.ts`，与 `database/init.sql` 对齐；`ON CONFLICT DO NOTHING` + 校正 identity 序列）在后台无限重试。数据库暂时不可用时进程**保持存活**，所有 `/api` 读写返回可重试的 `503`（`code=DATABASE_NOT_READY`/`PERSISTENCE_FAILED`、`retryable:true`、响应头 `Retry-After: 2`），`/health` 返回 503 且 `database=initializing|down`；数据库恢复后连接池自动重连、引导补建表/种子且**不覆盖已有数据**，接口自动恢复，无需重启后端。
+- 生命周期写操作在事务内对设备行 `SELECT ... FOR UPDATE`：状态判定、进行中计划计数、设备更新、变更记录追加原子提交；连接中断等可重试故障整体回滚并返回 503，不会出现“只改内存后报告成功”。
+- **写接口幂等（按调用范围隔离）**：对建档、豁免、报废、新建计划/证书/预警在请求头带 `Idempotency-Key: <任意唯一串>`。重放结果以 `(scope, key)` 存储，`scope` 自动取「HTTP 方法 + 路由模式」（如 `POST:/api/measuring-device/:id/exempt`）：
+  - 同一接口重复或并发提交相同 key：只落一次库，其余返回首次结果，不会生成两条相同记录；
+  - **不同写接口即使 key 相同也互不串用**（设备建档不会重放到豁免接口）；
+  - 不带该头则按普通请求处理；`device_code` 上还有数据库唯一约束兜底重复建档。
+- 升级旧版单列主键的 `idempotency_record` 时，引导会执行一次性在线迁移，改为 `(scope, idempotency_key)` 复合主键。
 
 ```bash
 # 同一豁免重复提交两次，只产生一条 EXEMPT 记录
@@ -101,6 +106,8 @@ for i in 1 2; do
     -H 'content-type: application/json' -H 'Idempotency-Key: exempt-dev1-2026q4' \
     -d '{"reason":"封存待处置","exempt_until":"2026-12-31T00:00:00Z"}'
 done
+# 数据库断线期间：进程仍在，返回可重试 503；恢复后自动继续，数据不变
+curl -i http://localhost:21116/api/measuring-device/   # 含 Retry-After: 2 与 retryable:true
 ```
 
 ## 枚举/常量出现位置清单
