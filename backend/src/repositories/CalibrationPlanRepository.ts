@@ -1,34 +1,76 @@
+import type { QueryResultRow } from "pg";
 import type { CalibrationPlan } from "../models/CalibrationPlan";
 import { IN_PROGRESS_PLAN_STATUS } from "../constants/PlanStatus";
-import { inMemoryStore } from "./inMemoryStore";
+import { query, clientQuery, type DbClient } from "./db";
+import { mapCalibrationPlan } from "./rowMappers";
+
+const PLAN_COLUMNS =
+  "id, device_id, planned_date, plan_type, priority, status, assigned_vendor_id, created_by";
 
 export const calibrationPlanRepository = {
-  findAll: (): CalibrationPlan[] => inMemoryStore.table("calibrationPlan"),
-
-  findById: (id: number): CalibrationPlan | undefined =>
-    inMemoryStore.table("calibrationPlan").find((row) => row.id === id),
-
-  findByDeviceId: (deviceId: number): CalibrationPlan[] =>
-    inMemoryStore.table("calibrationPlan").filter((row) => row.device_id === deviceId),
-
-  /**
-   * 统计设备仍在进行中的计划数量；报废前必须为 0，否则返回冲突。
-   */
-  countInProgressByDeviceId: (deviceId: number): number =>
-    inMemoryStore
-      .table("calibrationPlan")
-      .filter((row) => row.device_id === deviceId && IN_PROGRESS_PLAN_STATUS.includes(row.status)).length,
-
-  save: (row: CalibrationPlan): CalibrationPlan => {
-    const table = inMemoryStore.table("calibrationPlan");
-    const index = table.findIndex((existing) => existing.id === row.id);
-    if (index === -1) {
-      table.push(row);
-      return row;
-    }
-    table[index] = row;
-    return row;
+  findAll: async (): Promise<CalibrationPlan[]> => {
+    const result = await query<QueryResultRow>(
+      `SELECT ${PLAN_COLUMNS} FROM calibration_plan ORDER BY id`
+    );
+    return result.rows.map(mapCalibrationPlan);
   },
 
-  nextId: (): number => inMemoryStore.nextId("calibrationPlan")
+  findById: async (id: number): Promise<CalibrationPlan | null> => {
+    const result = await query<QueryResultRow>(
+      `SELECT ${PLAN_COLUMNS} FROM calibration_plan WHERE id = $1`,
+      [id]
+    );
+    return result.rows[0] ? mapCalibrationPlan(result.rows[0]) : null;
+  },
+
+  findByDeviceId: async (deviceId: number): Promise<CalibrationPlan[]> => {
+    const result = await query<QueryResultRow>(
+      `SELECT ${PLAN_COLUMNS} FROM calibration_plan WHERE device_id = $1 ORDER BY id`,
+      [deviceId]
+    );
+    return result.rows.map(mapCalibrationPlan);
+  },
+
+  /**
+   * 事务内统计设备进行中计划数量；用于报废冲突判定，与设备行锁共享同一快照。
+   */
+  countInProgressByDeviceId: async (client: DbClient, deviceId: number): Promise<number> => {
+    const result = await clientQuery<QueryResultRow>(
+      client,
+      `SELECT COUNT(*)::int AS count FROM calibration_plan
+       WHERE device_id = $1 AND status = ANY($2)`,
+      [deviceId, IN_PROGRESS_PLAN_STATUS]
+    );
+    return Number(result.rows[0].count);
+  },
+
+  insert: async (
+    client: DbClient,
+    input: {
+      device_id: number;
+      planned_date: string;
+      plan_type: string;
+      priority: string;
+      status: string;
+      assigned_vendor_id: number;
+      created_by: string;
+    }
+  ): Promise<CalibrationPlan> => {
+    const result = await clientQuery<QueryResultRow>(
+      client,
+      `INSERT INTO calibration_plan
+         (device_id, planned_date, plan_type, priority, status, assigned_vendor_id, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING ${PLAN_COLUMNS}`,
+      [
+        input.device_id,
+        input.planned_date,
+        input.plan_type,
+        input.priority,
+        input.status,
+        input.assigned_vendor_id,
+        input.created_by
+      ]
+    );
+    return mapCalibrationPlan(result.rows[0]);
+  }
 };

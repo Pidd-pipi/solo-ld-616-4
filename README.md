@@ -44,6 +44,9 @@ backend/src/routes, controllers, services, models, repositories, middlewares, co
 - `BACKEND_PORT`: 后端端口，默认 `21116`
 - `DB_PORT`: 数据库宿主机端口
 - `DB_USER/DB_PASSWORD/DB_NAME`: 本地数据库凭据
+- `DB_HOST`: 数据库主机，容器内为 `db`，本地直连默认 `localhost`
+- `JWT_SECRET`: JWT 签名密钥
+- `DB_CONNECT_RETRIES / DB_CONNECT_RETRY_DELAY_MS`: 启动等待数据库就绪的重试次数与间隔；重试耗尽则非零退出，不回退内存存储
 
 ## Docker 部署说明
 
@@ -69,8 +72,6 @@ backend/src/routes, controllers, services, models, repositories, middlewares, co
 - 豁免与报废**只改设备行的生命周期列并追加变更记录**，不改写任何校准计划和证书历史。
 - `GET /api/measuring-device/` 的每条记录同时返回生命周期、校准状态和最近一次变更记录（`lifecycle_status` / `status` / `exempt_reason` / `exempt_until` / `last_lifecycle_change`）。
 
-冲突相关错误码：`DEVICE_NOT_FOUND`(404)、`DEVICE_ALREADY_SCRAPPED`(409)、`DEVICE_ALREADY_EXEMPT`(409)、`DEVICE_SCRAP_PLAN_CONFLICT`(409)、`PLAN_DEVICE_SCRAPPED`(409)、`PLAN_DEVICE_EXEMPT`(409)、`VALIDATION_FAILED`(400)。
-
 ```bash
 # 豁免
 curl -X POST http://localhost:21116/api/measuring-device/2/exempt \
@@ -83,23 +84,42 @@ curl -X POST http://localhost:21116/api/measuring-device/3/scrap \
 curl http://localhost:21116/api/measuring-device/due-calibration
 ```
 
+冲突相关错误码：`DEVICE_NOT_FOUND`(404)、`DEVICE_ALREADY_SCRAPPED`(409)、`DEVICE_ALREADY_EXEMPT`(409)、`DEVICE_SCRAP_PLAN_CONFLICT`(409)、`PLAN_DEVICE_SCRAPPED`(409)、`PLAN_DEVICE_EXEMPT`(409)、`DEVICE_CODE_DUPLICATED`(409)、`IDEMPOTENCY_REPLAY_PENDING`(409)、`PERSISTENCE_FAILED`(503)、`VALIDATION_FAILED`(400)。
+
+## 持久化与幂等
+
+- 所有写入（建档、豁免、到期恢复、报废、新建计划/证书/预警）都直接落 **PostgreSQL**，进程内不再保留业务可变状态；服务重启后豁免、报废、新增设备和变更记录仍可查到，计划、证书、预警数量不随重启变化。
+- 启动顺序固定为：等待数据库就绪 → 幂等建表（`repositories/schema.ts`，与 `database/init.sql` 对齐）→ `ON CONFLICT DO NOTHING` 幂等种子并校正 identity 序列 → 监听端口。数据库不可达时启动直接失败（退出码 1），`/health` 在数据库异常时返回 503。
+- 生命周期写操作在事务内对设备行 `SELECT ... FOR UPDATE`：状态判定、进行中计划计数、设备更新、变更记录追加原子提交；写库失败整体回滚并返回 `503 PERSISTENCE_FAILED`，不会出现“只改内存后报告成功”。
+- **写接口幂等**：对建档、豁免、报废、新建计划/证书/预警在请求头带 `Idempotency-Key: <任意唯一串>`，同一 key 的重复或并发请求只落一次库并返回首次结果（存于 `idempotency_record` 表），不会生成两条相同记录。不带该头则按普通请求处理；`device_code` 上还有数据库唯一约束兜底重复建档。
+
+```bash
+# 同一豁免重复提交两次，只产生一条 EXEMPT 记录
+for i in 1 2; do
+  curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+    http://localhost:21116/api/measuring-device/1/exempt \
+    -H 'content-type: application/json' -H 'Idempotency-Key: exempt-dev1-2026q4' \
+    -d '{"reason":"封存待处置","exempt_until":"2026-12-31T00:00:00Z"}'
+done
+```
+
 ## 枚举/常量出现位置清单
 
 - DeviceCalibrationStatus: constants/DeviceCalibrationStatus、types/DeviceCalibrationStatus、constructors、logTemplates、errorMessages、筛选器、展示组件/控制器均有引用。
-  - 新增引用：`constants/DeviceCalibrationStatus.ts` 内 `PENDING_CALIBRATION_STATUS`（待校准范围）、`utils/formatters.ts`（状态文案/判定）、`models/MeasuringDevice.ts`、`constructors/MeasuringDeviceRowBuilder.ts`、`constructors/MeasuringDeviceDtoFactory.ts`、`constructors/MeasuringDeviceViewFactory.ts`、`services/DeviceLifecycleService.ts`。
+  - 新增引用：`constants/DeviceCalibrationStatus.ts` 内 `PENDING_CALIBRATION_STATUS`（待校准范围）、`utils/formatters.ts`（状态文案/判定）、`models/MeasuringDevice.ts`、`constructors/MeasuringDeviceDtoFactory.ts`、`constructors/MeasuringDeviceViewFactory.ts`、`services/DeviceLifecycleService.ts`、`repositories/rowMappers.ts`。
 - PlanStatus: constants/PlanStatus、types/PlanStatus、constructors、logTemplates、errorMessages、筛选器、展示组件/控制器均有引用。
-  - 新增引用：`constants/PlanStatus.ts` 内 `IN_PROGRESS_PLAN_STATUS`（报废冲突判定）、`repositories/CalibrationPlanRepository.ts`（`countInProgressByDeviceId`）、`services/DeviceLifecycleService.ts`、`constructors/CalibrationPlanRowBuilder.ts`、`seed.ts`。
+  - 新增引用：`constants/PlanStatus.ts` 内 `IN_PROGRESS_PLAN_STATUS`（报废冲突判定）、`repositories/CalibrationPlanRepository.ts`（事务内 `countInProgressByDeviceId`）、`services/DeviceLifecycleService.ts`、`constructors/CalibrationPlanRowBuilder.ts`、`seed.ts`。
 - CertificateResult: constants/CertificateResult、types/CertificateResult、constructors、logTemplates、errorMessages、筛选器、展示组件/控制器均有引用。
 - DeviceLifecycleStatus（新增）：
   - 常量：`constants/DeviceLifecycleStatus.ts`（含终态集合 `TERMINAL_DEVICE_LIFECYCLE_STATUS`）
   - 动作枚举：`constants/DeviceLifecycleAction.ts`（`EXEMPT/EXPIRE_RESTORE/SCRAP`）
   - 类型：`models/MeasuringDevice.ts`、`models/DeviceLifecycleRecord.ts`、`types/MeasuringDeviceView.ts`
-  - 构造器：`constructors/MeasuringDeviceRowBuilder.ts`、`constructors/DeviceLifecycleRecordBuilder.ts`、`constructors/MeasuringDeviceViewFactory.ts`、`constructors/MeasuringDeviceDtoFactory.ts`
+  - 构造器：`constructors/MeasuringDeviceViewFactory.ts`、`constructors/MeasuringDeviceDtoFactory.ts`
   - 日志模板：`constants/logTemplates.ts` 的 `DeviceLifecycle` 段
-  - 错误码/消息：`constants/errorCodes.ts`、`constants/errorMessages.ts`
+  - 错误码/消息：`constants/errorCodes.ts`、`constants/errorMessages.ts`（含 `PERSISTENCE_FAILED`、`DEVICE_CODE_DUPLICATED`、`IDEMPOTENCY_REPLAY_PENDING`）
   - 校验器/格式化：`validators/deviceLifecycleValidator.ts`、`utils/formatters.ts`
   - 服务/控制器/路由：`services/DeviceLifecycleService.ts`、`controllers/DeviceLifecycleController.ts`、`routes/DeviceLifecycleRoutes.ts`
-  - 存储与 DDL：`repositories/inMemoryStore.ts`、`repositories/DeviceLifecycleRecordRepository.ts`、`database/init.sql`（`device_lifecycle_record` 表 + `measuring_device` 生命周期列）、`seed.ts`
+  - 持久化与 DDL：`repositories/db.ts`（连接池/事务）、`repositories/schema.ts`（建表+幂等种子）、`repositories/rowMappers.ts`、`repositories/MeasuringDeviceRepository.ts`、`repositories/DeviceLifecycleRecordRepository.ts`、`repositories/IdempotencyRepository.ts`、`utils/idempotentRun.ts`、`database/init.sql`（`device_lifecycle_record` / `idempotency_record` 表 + `measuring_device` 生命周期列）、`seed.ts`
 
 ## 为什么会牵一发动全身
 

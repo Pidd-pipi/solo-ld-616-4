@@ -1,1 +1,26 @@
-import type { Request, Response } from "express"; import { calibrationVendorService } from "../services/CalibrationVendorService"; export const calibrationVendorController = { list: (_req: Request, res: Response) => res.json(calibrationVendorService.list()), create: (req: Request, res: Response) => res.status(201).json(calibrationVendorService.create(req.body)) };
+import type { Request, Response, NextFunction } from "express";
+import { calibrationVendorService } from "../services/CalibrationVendorService";
+import { wrapControllerError } from "../utils/controllerError";
+import { runIdempotent } from "../utils/idempotentRun";
+
+export const calibrationVendorController = {
+  list: async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      res.json(await calibrationVendorService.list());
+    } catch (err) {
+      next(wrapControllerError(err, "CalibrationVendor.list"));
+    }
+  },
+
+  create: async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const outcome = await runIdempotent(req, "CalibrationVendor.create", async () => ({
+        statusCode: 201,
+        body: await calibrationVendorService.create(req.body)
+      }));
+      res.status(outcome.statusCode).json(outcome.body);
+    } catch (err) {
+      next(wrapControllerError(err, "CalibrationVendor.create"));
+    }
+  }
+};

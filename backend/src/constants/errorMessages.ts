@@ -8,5 +8,8 @@ export const ERROR_MESSAGES = {
   DEVICE_ALREADY_EXEMPT: "measuring device %s is already exempt until %s",
   DEVICE_SCRAP_PLAN_CONFLICT: "measuring device %s has %s in-progress plan(s), scrap rejected",
   PLAN_DEVICE_SCRAPPED: "measuring device %s is scrapped, new calibration plan rejected",
-  PLAN_DEVICE_EXEMPT: "measuring device %s is exempt until %s, new calibration plan rejected"
+  PLAN_DEVICE_EXEMPT: "measuring device %s is exempt until %s, new calibration plan rejected",
+  DEVICE_CODE_DUPLICATED: "device_code %s already exists, duplicate create rejected",
+  IDEMPOTENCY_REPLAY_PENDING: "identical request already submitted, first result not ready yet",
+  PERSISTENCE_FAILED: "storage write failed, operation not persisted"
 };

@@ -1,23 +1,27 @@
 import type { Request, Response, NextFunction } from "express";
 import { measuringDeviceService } from "../services/MeasuringDeviceService";
 import { wrapControllerError } from "../utils/controllerError";
+import { runIdempotent } from "../utils/idempotentRun";
 
 /**
- * 设备台账控制器。原有列表/建档接口保持不变；
- * 列表项现在统一返回生命周期、校准状态和最近一次变更记录。
+ * 设备台账控制器。原有建档/查询入口保持不变；写接口支持 Idempotency-Key 去重。
  */
 export const measuringDeviceController = {
-  list: (_req: Request, res: Response, next: NextFunction) => {
+  list: async (_req: Request, res: Response, next: NextFunction) => {
     try {
-      res.json(measuringDeviceService.list());
+      res.json(await measuringDeviceService.list());
     } catch (err) {
       next(wrapControllerError(err, "MeasuringDevice.list"));
     }
   },
 
-  create: (req: Request, res: Response, next: NextFunction) => {
+  create: async (req: Request, res: Response, next: NextFunction) => {
     try {
-      res.status(201).json(measuringDeviceService.create(req.body));
+      const outcome = await runIdempotent(req, "MeasuringDevice.create", async () => ({
+        statusCode: 201,
+        body: await measuringDeviceService.create(req.body)
+      }));
+      res.status(outcome.statusCode).json(outcome.body);
     } catch (err) {
       next(wrapControllerError(err, "MeasuringDevice.create"));
     }
