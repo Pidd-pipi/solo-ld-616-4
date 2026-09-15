@@ -4,31 +4,40 @@ export const seed = {
       "id": 1,
       "device_code": "device code 1",
       "name": "name 1",
-      "device_type": "DUE_SOON",
+      "device_type": "PRESSURE",
       "accuracy_level": "LOW",
       "owner_dept": "owner dept 1",
-      "calibration_cycle_days": "calibration cycle days 1",
-      "status": "DUE_SOON"
+      "calibration_cycle_days": 180,
+      "status": "DUE_SOON",
+      "lifecycle_status": "ACTIVE",
+      "exempt_reason": null,
+      "exempt_until": null
     },
     {
       "id": 2,
       "device_code": "device code 2",
       "name": "name 2",
-      "device_type": "OVERDUE",
+      "device_type": "TEMPERATURE",
       "accuracy_level": "MEDIUM",
       "owner_dept": "owner dept 2",
-      "calibration_cycle_days": "calibration cycle days 2",
-      "status": "OVERDUE"
+      "calibration_cycle_days": 365,
+      "status": "OVERDUE",
+      "lifecycle_status": "ACTIVE",
+      "exempt_reason": null,
+      "exempt_until": null
     },
     {
       "id": 3,
       "device_code": "device code 3",
       "name": "name 3",
-      "device_type": "CALIBRATING",
+      "device_type": "DIMENSION",
       "accuracy_level": "HIGH",
       "owner_dept": "owner dept 3",
-      "calibration_cycle_days": "calibration cycle days 3",
-      "status": "VALID"
+      "calibration_cycle_days": 365,
+      "status": "VALID",
+      "lifecycle_status": "ACTIVE",
+      "exempt_reason": null,
+      "exempt_until": null
     }
   ],
   "calibrationPlan": [
@@ -36,9 +45,9 @@ export const seed = {
       "id": 1,
       "device_id": 1,
       "planned_date": "2026-06-11T09:00:00Z",
-      "plan_type": "DUE_SOON",
-      "priority": "priority 1",
-      "status": "DUE_SOON",
+      "plan_type": "PERIODIC",
+      "priority": "HIGH",
+      "status": "PLANNED",
       "assigned_vendor_id": 1,
       "created_by": "created by 1"
     },
@@ -46,9 +55,9 @@ export const seed = {
       "id": 2,
       "device_id": 2,
       "planned_date": "2026-06-12T09:00:00Z",
-      "plan_type": "OVERDUE",
-      "priority": "priority 2",
-      "status": "OVERDUE",
+      "plan_type": "PERIODIC",
+      "priority": "HIGH",
+      "status": "IN_PROGRESS",
       "assigned_vendor_id": 2,
       "created_by": "created by 2"
     },
@@ -56,9 +65,9 @@ export const seed = {
       "id": 3,
       "device_id": 3,
       "planned_date": "2026-06-13T09:00:00Z",
-      "plan_type": "CALIBRATING",
-      "priority": "priority 3",
-      "status": "VALID",
+      "plan_type": "PERIODIC",
+      "priority": "MEDIUM",
+      "status": "CLOSED",
       "assigned_vendor_id": 3,
       "created_by": "created by 3"
     }

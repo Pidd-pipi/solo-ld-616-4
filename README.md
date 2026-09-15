@@ -52,11 +52,54 @@ backend/src/routes, controllers, services, models, repositories, middlewares, co
 - 数据库使用命名卷，避免绑定中文路径。
 - 常见问题：端口占用时修改 `.env` 中端口后重启；需要重置数据时执行 `docker compose down -v`。
 
+## 设备生命周期：校准豁免 / 到期恢复 / 报废
+
+在原有设备建档、查询流程不变的前提下，台账新增生命周期能力。生命周期（`lifecycle_status`）与校准状态（`status`）相互独立：
+
+| 生命周期状态 | 含义 | 对待校准范围 / 新建计划的影响 |
+|---|---|---|
+| `ACTIVE` | 在役（默认） | 正常进入待校准范围，允许新建计划 |
+| `EXEMPT` | 校准豁免（带原因和截止日） | 截止日前**不进入待校准范围**；期间新建计划返回 409 |
+| `SCRAPPED` | 已报废（**终态**） | 不进入待校准范围；任何新建计划返回 409，不可再豁免/报废 |
+
+- **豁免** `POST /api/measuring-device/:id/exempt`，请求体 `{ "reason": "封存待处置", "exempt_until": "2026-12-31T00:00:00Z" }`，必须提供原因和晚于当前时间的截止日。
+- **到期恢复**：无独立接口。豁免超过 `exempt_until` 后，设备在下一次被读取（台账列表、详情、待校准查询、新建计划校验）时**自动恢复**为 `ACTIVE`，清空豁免原因/截止日，并追加一条 `EXPIRE_RESTORE` 变更记录。
+- **报废** `POST /api/measuring-device/:id/scrap`，请求体 `{ "reason": "损坏" }`（原因可选）。仅当该设备**没有进行中计划**（计划状态为 `PLANNED/ASSIGNED/IN_PROGRESS/CERT_UPLOADED`）时允许；否则设备**保持原状态**、不写任何变更记录，返回 `409 DEVICE_SCRAP_PLAN_CONFLICT`。
+- **待校准范围** `GET /api/measuring-device/due-calibration`：返回校准状态为 `DUE_SOON/OVERDUE` 且当前生命周期为 `ACTIVE` 的设备（豁免有效期内、已报废均不返回）。
+- 豁免与报废**只改设备行的生命周期列并追加变更记录**，不改写任何校准计划和证书历史。
+- `GET /api/measuring-device/` 的每条记录同时返回生命周期、校准状态和最近一次变更记录（`lifecycle_status` / `status` / `exempt_reason` / `exempt_until` / `last_lifecycle_change`）。
+
+冲突相关错误码：`DEVICE_NOT_FOUND`(404)、`DEVICE_ALREADY_SCRAPPED`(409)、`DEVICE_ALREADY_EXEMPT`(409)、`DEVICE_SCRAP_PLAN_CONFLICT`(409)、`PLAN_DEVICE_SCRAPPED`(409)、`PLAN_DEVICE_EXEMPT`(409)、`VALIDATION_FAILED`(400)。
+
+```bash
+# 豁免
+curl -X POST http://localhost:21116/api/measuring-device/2/exempt \
+  -H 'content-type: application/json' \
+  -d '{"reason":"封存待处置","exempt_until":"2026-12-31T00:00:00Z"}'
+# 报废（有进行中计划时返回 409 且设备状态不变）
+curl -X POST http://localhost:21116/api/measuring-device/3/scrap \
+  -H 'content-type: application/json' -d '{"reason":"损坏"}'
+# 待校准范围（自动触发到期恢复）
+curl http://localhost:21116/api/measuring-device/due-calibration
+```
+
 ## 枚举/常量出现位置清单
 
 - DeviceCalibrationStatus: constants/DeviceCalibrationStatus、types/DeviceCalibrationStatus、constructors、logTemplates、errorMessages、筛选器、展示组件/控制器均有引用。
+  - 新增引用：`constants/DeviceCalibrationStatus.ts` 内 `PENDING_CALIBRATION_STATUS`（待校准范围）、`utils/formatters.ts`（状态文案/判定）、`models/MeasuringDevice.ts`、`constructors/MeasuringDeviceRowBuilder.ts`、`constructors/MeasuringDeviceDtoFactory.ts`、`constructors/MeasuringDeviceViewFactory.ts`、`services/DeviceLifecycleService.ts`。
 - PlanStatus: constants/PlanStatus、types/PlanStatus、constructors、logTemplates、errorMessages、筛选器、展示组件/控制器均有引用。
+  - 新增引用：`constants/PlanStatus.ts` 内 `IN_PROGRESS_PLAN_STATUS`（报废冲突判定）、`repositories/CalibrationPlanRepository.ts`（`countInProgressByDeviceId`）、`services/DeviceLifecycleService.ts`、`constructors/CalibrationPlanRowBuilder.ts`、`seed.ts`。
 - CertificateResult: constants/CertificateResult、types/CertificateResult、constructors、logTemplates、errorMessages、筛选器、展示组件/控制器均有引用。
+- DeviceLifecycleStatus（新增）：
+  - 常量：`constants/DeviceLifecycleStatus.ts`（含终态集合 `TERMINAL_DEVICE_LIFECYCLE_STATUS`）
+  - 动作枚举：`constants/DeviceLifecycleAction.ts`（`EXEMPT/EXPIRE_RESTORE/SCRAP`）
+  - 类型：`models/MeasuringDevice.ts`、`models/DeviceLifecycleRecord.ts`、`types/MeasuringDeviceView.ts`
+  - 构造器：`constructors/MeasuringDeviceRowBuilder.ts`、`constructors/DeviceLifecycleRecordBuilder.ts`、`constructors/MeasuringDeviceViewFactory.ts`、`constructors/MeasuringDeviceDtoFactory.ts`
+  - 日志模板：`constants/logTemplates.ts` 的 `DeviceLifecycle` 段
+  - 错误码/消息：`constants/errorCodes.ts`、`constants/errorMessages.ts`
+  - 校验器/格式化：`validators/deviceLifecycleValidator.ts`、`utils/formatters.ts`
+  - 服务/控制器/路由：`services/DeviceLifecycleService.ts`、`controllers/DeviceLifecycleController.ts`、`routes/DeviceLifecycleRoutes.ts`
+  - 存储与 DDL：`repositories/inMemoryStore.ts`、`repositories/DeviceLifecycleRecordRepository.ts`、`database/init.sql`（`device_lifecycle_record` 表 + `measuring_device` 生命周期列）、`seed.ts`
 
 ## 为什么会牵一发动全身
 

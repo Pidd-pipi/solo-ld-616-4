@@ -1,1 +1,13 @@
-import { seed } from "../seed"; export const calibrationVendorRepository = { findAll: () => seed.calibrationVendor, save: (row: unknown) => row };
+import type { CalibrationVendor } from "../models/CalibrationVendor";
+import { inMemoryStore } from "./inMemoryStore";
+
+export const calibrationVendorRepository = {
+  findAll: (): CalibrationVendor[] => inMemoryStore.table("calibrationVendor"),
+
+  save: (row: CalibrationVendor): CalibrationVendor => {
+    inMemoryStore.table("calibrationVendor").push(row);
+    return row;
+  },
+
+  nextId: (): number => inMemoryStore.nextId("calibrationVendor")
+};

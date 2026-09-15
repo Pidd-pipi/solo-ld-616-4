@@ -1,7 +1,11 @@
 import type { DeviceCalibrationStatus } from "../constants/DeviceCalibrationStatus";
 import type { DeviceLifecycleStatus } from "../constants/DeviceLifecycleStatus";
+import type { DeviceLifecycleRecord } from "../models/DeviceLifecycleRecord";
 
-export interface MeasuringDevice {
+/**
+ * 台账查询统一视图：同时返回生命周期、校准状态和最近一次生命周期变更记录。
+ */
+export interface MeasuringDeviceView {
   id: number;
   device_code: string;
   name: string;
@@ -13,4 +17,5 @@ export interface MeasuringDevice {
   lifecycle_status: DeviceLifecycleStatus;
   exempt_reason: string | null;
   exempt_until: string | null;
+  last_lifecycle_change: DeviceLifecycleRecord | null;
 }
