@@ -14,10 +14,11 @@ export const calibrationVendorController = {
 
   create: async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const outcome = await runIdempotent(req, "CalibrationVendor.create", async () => ({
-        statusCode: 201,
-        body: await calibrationVendorService.create(req.body)
-      }));
+      const outcome = await runIdempotent(req, "CalibrationVendor.create", (client) =>
+        calibrationVendorService
+          .createInTxn(client, req.body)
+          .then((body) => ({ statusCode: 201, body }))
+      );
       res.status(outcome.statusCode).json(outcome.body);
     } catch (err) {
       next(wrapControllerError(err, "CalibrationVendor.create"));

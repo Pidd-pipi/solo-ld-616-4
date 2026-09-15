@@ -68,87 +68,106 @@ export const deviceLifecycleService = {
   exempt: async (id: number, payload: DeviceLifecycleExemptPayload): Promise<MeasuringDeviceView> => {
     const nowIso = payload.now ?? new Date().toISOString();
     await deviceLifecycleService.restoreExpiredDevices(nowIso);
+    return withTransaction((client) => deviceLifecycleService.exemptInTxn(client, id, payload, nowIso));
+  },
 
-    return withTransaction(async (client) => {
-      const device = await deviceLifecycleService.lockDevice(client, id);
+  /**
+   * 在调用方事务内执行豁免（业务与幂等结果登记由此同事务提交）。
+   * 调用方负责在事务前先 restoreExpiredDevices。
+   */
+  exemptInTxn: async (
+    client: DbClient,
+    id: number,
+    payload: DeviceLifecycleExemptPayload,
+    nowIso: string = payload.now ?? new Date().toISOString()
+  ): Promise<MeasuringDeviceView> => {
+    const device = await deviceLifecycleService.lockDevice(client, id);
 
-      if (device.lifecycle_status === "SCRAPPED") {
-        throw conflict(
-          ERROR_CODES.DEVICE_ALREADY_SCRAPPED,
-          formatMessage(ERROR_MESSAGES.DEVICE_ALREADY_SCRAPPED, id)
-        );
-      }
-      if (device.lifecycle_status === "EXEMPT") {
-        throw conflict(
-          ERROR_CODES.DEVICE_ALREADY_EXEMPT,
-          formatMessage(ERROR_MESSAGES.DEVICE_ALREADY_EXEMPT, id, device.exempt_until ?? "")
-        );
-      }
+    if (device.lifecycle_status === "SCRAPPED") {
+      throw conflict(
+        ERROR_CODES.DEVICE_ALREADY_SCRAPPED,
+        formatMessage(ERROR_MESSAGES.DEVICE_ALREADY_SCRAPPED, id)
+      );
+    }
+    if (device.lifecycle_status === "EXEMPT") {
+      throw conflict(
+        ERROR_CODES.DEVICE_ALREADY_EXEMPT,
+        formatMessage(ERROR_MESSAGES.DEVICE_ALREADY_EXEMPT, id, device.exempt_until ?? "")
+      );
+    }
 
-      const updated = await measuringDeviceRepository.updateLifecycle(client, id, {
-        lifecycle_status: "EXEMPT",
-        exempt_reason: payload.reason,
-        exempt_until: payload.exempt_until
-      });
-      const record = await deviceLifecycleService.appendRecord(client, {
-        device_id: id,
-        action: "EXEMPT",
-        from_status: device.lifecycle_status,
-        to_status: "EXEMPT",
-        reason: payload.reason,
-        exempt_until: payload.exempt_until,
-        operated_by: payload.operated_by ?? null,
-        created_at: nowIso
-      });
-      console.info(LOG_TEMPLATES.DeviceLifecycle[0], id, payload.exempt_until);
-      return buildMeasuringDeviceView(updated, record);
+    const updated = await measuringDeviceRepository.updateLifecycle(client, id, {
+      lifecycle_status: "EXEMPT",
+      exempt_reason: payload.reason,
+      exempt_until: payload.exempt_until
     });
+    const record = await deviceLifecycleService.appendRecord(client, {
+      device_id: id,
+      action: "EXEMPT",
+      from_status: device.lifecycle_status,
+      to_status: "EXEMPT",
+      reason: payload.reason,
+      exempt_until: payload.exempt_until,
+      operated_by: payload.operated_by ?? null,
+      created_at: nowIso
+    });
+    console.info(LOG_TEMPLATES.DeviceLifecycle[0], id, payload.exempt_until);
+    return buildMeasuringDeviceView(updated, record);
   },
 
   scrap: async (id: number, payload: DeviceLifecycleScrapPayload = {}): Promise<MeasuringDeviceView> => {
     const nowIso = payload.now ?? new Date().toISOString();
     await deviceLifecycleService.restoreExpiredDevices(nowIso);
+    return withTransaction((client) => deviceLifecycleService.scrapInTxn(client, id, payload, nowIso));
+  },
 
-    return withTransaction(async (client) => {
-      const device = await deviceLifecycleService.lockDevice(client, id);
+  /**
+   * 在调用方事务内执行报废（业务与幂等结果登记同事务提交）。
+   */
+  scrapInTxn: async (
+    client: DbClient,
+    id: number,
+    payload: DeviceLifecycleScrapPayload = {},
+    nowIso: string = payload.now ?? new Date().toISOString()
+  ): Promise<MeasuringDeviceView> => {
+    const device = await deviceLifecycleService.lockDevice(client, id);
 
-      if (device.lifecycle_status === "SCRAPPED") {
-        throw conflict(
-          ERROR_CODES.DEVICE_ALREADY_SCRAPPED,
-          formatMessage(ERROR_MESSAGES.DEVICE_ALREADY_SCRAPPED, id)
-        );
-      }
+    if (device.lifecycle_status === "SCRAPPED") {
+      throw conflict(
+        ERROR_CODES.DEVICE_ALREADY_SCRAPPED,
+        formatMessage(ERROR_MESSAGES.DEVICE_ALREADY_SCRAPPED, id)
+      );
+    }
 
-      const inProgressCount = await calibrationPlanRepository.countInProgressByDeviceId(client, id);
-      if (inProgressCount > 0) {
-        // 保持原状态：不更新设备行、不追加报废记录，事务直接以 409 回滚。
-        console.info(LOG_TEMPLATES.DeviceLifecycle[3], id, inProgressCount);
-        throw new DomainError(
-          409,
-          ERROR_CODES.DEVICE_SCRAP_PLAN_CONFLICT,
-          formatMessage(ERROR_MESSAGES.DEVICE_SCRAP_PLAN_CONFLICT, id, inProgressCount)
-        );
-      }
+    const inProgressCount = await calibrationPlanRepository.countInProgressByDeviceId(client, id);
+    if (inProgressCount > 0) {
+      // 保持原状态：不更新设备行、不追加报废记录，事务直接以 409 回滚。
+      console.info(LOG_TEMPLATES.DeviceLifecycle[3], id, inProgressCount);
+      throw new DomainError(
+        409,
+        ERROR_CODES.DEVICE_SCRAP_PLAN_CONFLICT,
+        formatMessage(ERROR_MESSAGES.DEVICE_SCRAP_PLAN_CONFLICT, id, inProgressCount)
+      );
+    }
 
-      const updated = await measuringDeviceRepository.updateLifecycle(client, id, {
-        lifecycle_status: "SCRAPPED",
-        exempt_reason: null,
-        exempt_until: null,
-        status: "SCRAPPED"
-      });
-      const record = await deviceLifecycleService.appendRecord(client, {
-        device_id: id,
-        action: "SCRAP",
-        from_status: device.lifecycle_status,
-        to_status: "SCRAPPED",
-        reason: payload.reason ?? null,
-        exempt_until: null,
-        operated_by: payload.operated_by ?? null,
-        created_at: nowIso
-      });
-      console.info(LOG_TEMPLATES.DeviceLifecycle[2], id);
-      return buildMeasuringDeviceView(updated, record);
+    const updated = await measuringDeviceRepository.updateLifecycle(client, id, {
+      lifecycle_status: "SCRAPPED",
+      exempt_reason: null,
+      exempt_until: null,
+      status: "SCRAPPED"
     });
+    const record = await deviceLifecycleService.appendRecord(client, {
+      device_id: id,
+      action: "SCRAP",
+      from_status: device.lifecycle_status,
+      to_status: "SCRAPPED",
+      reason: payload.reason ?? null,
+      exempt_until: null,
+      operated_by: payload.operated_by ?? null,
+      created_at: nowIso
+    });
+    console.info(LOG_TEMPLATES.DeviceLifecycle[2], id);
+    return buildMeasuringDeviceView(updated, record);
   },
 
   listDueCalibration: async (nowIso: string = new Date().toISOString()): Promise<MeasuringDeviceView[]> => {

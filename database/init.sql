@@ -88,11 +88,16 @@ CREATE INDEX IF NOT EXISTS idx_lifecycle_record_device
 -- 写接口幂等：按调用范围隔离。同一 (scope, Idempotency-Key) 重放首次结果，
 -- 重复提交不产生第二条记录；不同写接口（不同 scope）即使 key 相同也互不串用。
 -- scope 形如 POST:/api/measuring-device/:id/exempt。
+-- owner_token/leased_at 为崩溃接管租约：持有者失联（行锁释放且租约过期）后可被安全接管，
+-- 业务写入与结果登记在持有者同一事务提交，保证不执行两次、首次结果可回读。
 CREATE TABLE IF NOT EXISTS idempotency_record (
   scope TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
   status_code INTEGER NOT NULL,
   response JSONB NOT NULL,
+  owner_token TEXT,
+  leased_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (scope, idempotency_key)
 );

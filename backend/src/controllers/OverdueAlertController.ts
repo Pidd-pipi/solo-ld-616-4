@@ -14,10 +14,11 @@ export const overdueAlertController = {
 
   create: async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const outcome = await runIdempotent(req, "OverdueAlert.create", async () => ({
-        statusCode: 201,
-        body: await overdueAlertService.create(req.body)
-      }));
+      const outcome = await runIdempotent(req, "OverdueAlert.create", (client) =>
+        overdueAlertService
+          .createInTxn(client, req.body)
+          .then((body) => ({ statusCode: 201, body }))
+      );
       res.status(outcome.statusCode).json(outcome.body);
     } catch (err) {
       next(wrapControllerError(err, "OverdueAlert.create"));

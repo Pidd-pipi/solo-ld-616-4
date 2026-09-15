@@ -1,8 +1,9 @@
 import type { MeasuringDevice } from "../models/MeasuringDevice";
 import type { MeasuringDeviceView } from "../types/MeasuringDeviceView";
+import type { DbClient } from "../repositories/db";
+import { isUniqueViolation } from "../repositories/db";
 import { measuringDeviceRepository } from "../repositories/MeasuringDeviceRepository";
 import { deviceLifecycleRecordRepository } from "../repositories/DeviceLifecycleRecordRepository";
-import { isUniqueViolation } from "../repositories/db";
 import { deviceLifecycleService } from "./DeviceLifecycleService";
 import { buildMeasuringDeviceView } from "../constructors/MeasuringDeviceViewFactory";
 import { ERROR_CODES } from "../constants/errorCodes";
@@ -31,12 +32,15 @@ export const measuringDeviceService = {
     return buildMeasuringDeviceView(device, latest);
   },
 
-  create: async (
+  /**
+   * 在调用方事务内建档（与幂等结果登记同事务提交）。
+   */
+  createInTxn: async (
+    client: DbClient,
     row: Partial<MeasuringDevice> & { device_code?: string; name?: string }
   ): Promise<MeasuringDevice> => {
     try {
-      // 先写库，成功后才返回；写库失败由全局异常链路返回明确错误，绝不只改内存后报告成功。
-      return await measuringDeviceRepository.insert({
+      return await measuringDeviceRepository.insert(client, {
         device_code: row.device_code ?? "",
         name: row.name ?? "",
         device_type: row.device_type ?? "",
@@ -49,7 +53,7 @@ export const measuringDeviceService = {
         status: row.status ?? "VALID"
       });
     } catch (err) {
-      // 重复建档（device_code 唯一约束）→ 409，且不产生第二条记录。
+      // 重复建档（device_code 唯一约束）→ 409，事务回滚，不产生第二条记录。
       const cause = (err as { cause?: unknown })?.cause;
       if (isUniqueViolation(cause)) {
         throw conflict(

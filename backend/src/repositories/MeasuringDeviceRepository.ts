@@ -44,16 +44,20 @@ export const measuringDeviceRepository = {
     return result.rows.map(mapMeasuringDevice);
   },
 
-  insert: async (input: {
-    device_code: string;
-    name: string;
-    device_type?: string;
-    accuracy_level?: string;
-    owner_dept?: string;
-    calibration_cycle_days?: number;
-    status?: string;
-  }): Promise<MeasuringDevice> => {
-    const result = await query<QueryResultRow>(
+  insert: async (
+    client: DbClient,
+    input: {
+      device_code: string;
+      name: string;
+      device_type?: string;
+      accuracy_level?: string;
+      owner_dept?: string;
+      calibration_cycle_days?: number;
+      status?: string;
+    }
+  ): Promise<MeasuringDevice> => {
+    const result = await clientQuery<QueryResultRow>(
+      client,
       `INSERT INTO measuring_device
          (device_code, name, device_type, accuracy_level, owner_dept, calibration_cycle_days, status, lifecycle_status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,'ACTIVE')

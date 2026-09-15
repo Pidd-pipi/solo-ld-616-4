@@ -86,12 +86,17 @@ const SCHEMA_STATEMENTS: string[] = [
      idempotency_key TEXT NOT NULL,
      status_code INTEGER NOT NULL,
      response JSONB NOT NULL,
+     -- 租约归属：owner_token 标识当前持有者；leased_at 为最近一次续租时间，
+     -- 持有者执行期间持续心跳；失联（无心跳且超过 TTL）后他人可安全接管。
+     owner_token TEXT,
+     leased_at TIMESTAMPTZ,
+     completed_at TIMESTAMPTZ,
      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
      -- 幂等键按调用范围隔离：同一 key 在不同写接口（不同 scope）互不串用，
      -- 同一接口同一 key 仍只执行一次。
      PRIMARY KEY (scope, idempotency_key)
    )`,
-  // 一次性在线迁移：把旧版（idempotency_key 单列主键）表升级为 (scope, idempotency_key) 复合主键。
+  // 一次性在线迁移 A：把旧版（idempotency_key 单列主键）表升级为 (scope, idempotency_key) 复合主键。
   `DO $$
      BEGIN
        IF EXISTS (
@@ -104,6 +109,22 @@ const SCHEMA_STATEMENTS: string[] = [
          ALTER TABLE idempotency_record DROP CONSTRAINT idempotency_record_pkey;
          ALTER TABLE idempotency_record ALTER COLUMN scope SET NOT NULL;
          ALTER TABLE idempotency_record ADD PRIMARY KEY (scope, idempotency_key);
+       END IF;
+     EXCEPTION WHEN undefined_table THEN
+       NULL;
+     END;
+   $$`,
+  // 一次性在线迁移 B：为已存在的复合主键表补齐租约列（崩溃接管所需）。
+  // 历史未完成占位（status_code=0 且 owner 为空）直接清空，等价于启动即回收。
+  `DO $$
+     BEGIN
+       IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'idempotency_record')
+          AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                          WHERE table_name = 'idempotency_record' AND column_name = 'owner_token') THEN
+         ALTER TABLE idempotency_record ADD COLUMN owner_token TEXT;
+         ALTER TABLE idempotency_record ADD COLUMN leased_at TIMESTAMPTZ;
+         ALTER TABLE idempotency_record ADD COLUMN completed_at TIMESTAMPTZ;
+         DELETE FROM idempotency_record WHERE status_code = 0;
        END IF;
      EXCEPTION WHEN undefined_table THEN
        NULL;

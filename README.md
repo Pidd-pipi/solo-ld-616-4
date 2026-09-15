@@ -92,11 +92,14 @@ curl http://localhost:21116/api/measuring-device/due-calibration
 - 所有写入（建档、豁免、到期恢复、报废、新建计划/证书/预警）都直接落 **PostgreSQL**，进程内不保留业务可变状态；服务重启后豁免、报废、新增设备和变更记录仍可查到，计划、证书、预警数量不随重启变化。
 - **进程不依赖数据库先启动**：HTTP 服务先监听，建表与幂等种子（`repositories/schema.ts`，与 `database/init.sql` 对齐；`ON CONFLICT DO NOTHING` + 校正 identity 序列）在后台无限重试。数据库暂时不可用时进程**保持存活**，所有 `/api` 读写返回可重试的 `503`（`code=DATABASE_NOT_READY`/`PERSISTENCE_FAILED`、`retryable:true`、响应头 `Retry-After: 2`），`/health` 返回 503 且 `database=initializing|down`；数据库恢复后连接池自动重连、引导补建表/种子且**不覆盖已有数据**，接口自动恢复，无需重启后端。
 - 生命周期写操作在事务内对设备行 `SELECT ... FOR UPDATE`：状态判定、进行中计划计数、设备更新、变更记录追加原子提交；连接中断等可重试故障整体回滚并返回 503，不会出现“只改内存后报告成功”。
-- **写接口幂等（按调用范围隔离）**：对建档、豁免、报废、新建计划/证书/预警在请求头带 `Idempotency-Key: <任意唯一串>`。重放结果以 `(scope, key)` 存储，`scope` 自动取「HTTP 方法 + 路由模式」（如 `POST:/api/measuring-device/:id/exempt`）：
+- **写接口幂等（按调用范围隔离 + 崩溃接管）**：对建档、豁免、报废、新建计划/证书/预警在请求头带 `Idempotency-Key: <任意唯一串>`。重放结果以 `(scope, key)` 存储，`scope` 自动取「HTTP 方法 + 路由模式」（如 `POST:/api/measuring-device/:id/exempt`）：
   - 同一接口重复或并发提交相同 key：只落一次库，其余返回首次结果，不会生成两条相同记录；
   - **不同写接口即使 key 相同也互不串用**（设备建档不会重放到豁免接口）；
-  - 不带该头则按普通请求处理；`device_code` 上还有数据库唯一约束兜底重复建档。
-- 升级旧版单列主键的 `idempotency_record` 时，引导会执行一次性在线迁移，改为 `(scope, idempotency_key)` 复合主键。
+  - **业务写入与结果登记在持有者同一事务提交/回滚**，不存在“业务已提交但结果未登记”的中间态：崩溃在提交前则业务整体回滚、无副作用，崩溃在提交时二者同生共灭；
+  - **持有者失联可安全接管**：占位带 `owner_token` 与 `leased_at` 租约，执行期间持有者对占位行加 `FOR UPDATE` 行锁，跟随者用 `FOR UPDATE SKIP LOCKED` 非阻塞探测——持有者存活时只等待（最终返回可重试 `409 IDEMPOTENCY_REPLAY_PENDING`），持有者崩溃致行锁释放且租约过期后，跟随者原子接管并重跑到唯一结果，绝不执行两次；跟随者也可能在同一次请求内完成接管；
+  - 业务校验失败（如报废冲突 409）时事务回滚并释放未完成占位，同一 key 修正后可立即重试到唯一结果；不带该头则按普通请求处理；`device_code` 上还有数据库唯一约束兜底重复建档。
+  - 相关参数：`IDEMPOTENCY_LEASE_TTL_MS`（默认 15000，仅覆盖“抢到占位到业务事务拿到行锁”的毫秒级间隙，执行期间由行锁守护）、`IDEMPOTENCY_WAIT_TIMEOUT_MS`（默认 30000）、`IDEMPOTENCY_POLL_INTERVAL_MS`（默认 200）。
+- 升级旧版 `idempotency_record`（单列主键版、或无租约列的复合主键版）时，引导会执行一次性在线迁移：改为 `(scope, idempotency_key)` 复合主键并补齐 `owner_token/leased_at/completed_at`，历史未完成占位启动即回收。
 
 ```bash
 # 同一豁免重复提交两次，只产生一条 EXEMPT 记录
