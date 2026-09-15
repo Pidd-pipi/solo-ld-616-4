@@ -11,3 +11,6 @@ __pycache__/
 .pytest_cache/
 target/
 vendor/
+
+# 集成测试运行时（嵌入式 PG 数据目录与后端日志）
+backend/.tmp/

@@ -1,0 +1,1 @@
+/workspace/backend/node_modules/@embedded-postgres/linux-arm64/native/bin/postgres "-D" "/workspace/backend/test/.tmp/pgdata" "-p" "55432"

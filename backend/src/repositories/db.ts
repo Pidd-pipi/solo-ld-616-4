@@ -129,3 +129,10 @@ export const clientQuery = async <T extends QueryResultRow = QueryResultRow>(
     throw mapDbError(err, text.slice(0, 48));
   }
 };
+
+/**
+ * 优雅关闭：停止接受新查询并关闭池内所有连接，供进程收到 SIGTERM/SIGINT 时退出。
+ */
+export const closePool = async (): Promise<void> => {
+  await pool.end();
+};

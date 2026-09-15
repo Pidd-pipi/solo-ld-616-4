@@ -6,6 +6,7 @@ import {
   isDatabaseReady,
   getDatabaseState
 } from "./repositories/databaseState";
+import { closePool } from "./repositories/db";
 import { databaseReadyMiddleware } from "./middlewares/databaseReadyMiddleware";
 import { authMiddleware } from "./middlewares/authMiddleware";
 import { auditLogMiddleware } from "./middlewares/auditLogMiddleware";
@@ -56,8 +57,21 @@ const server = app.listen(config.port, () => {
   startDatabaseBootstrap();
 });
 
-const shutdown = async () => {
-  server.close(() => process.exit(0));
+let shuttingDown = false;
+const shutdown = (signal: NodeJS.Signals): void => {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  console.log(`[shutdown] received ${signal}, stopping...`);
+  // 关闭空闲 keep-alive 连接，避免 server.close 回调因长连接悬挂而不触发。
+  server.closeAllConnections?.();
+  server.close(async () => {
+    await closePool().catch(() => undefined);
+    process.exit(0);
+  });
+  // 硬兜底：任何句柄仍悬挂时也必须退出（容器/测试依赖干净的子进程回收）。
+  setTimeout(() => process.exit(0), 2000).unref();
 };
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
